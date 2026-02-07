@@ -2,7 +2,9 @@
 
 import base64
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 from browser_use.llm.messages import (
 	BaseMessage,
@@ -45,6 +47,8 @@ def construct_judge_messages(
 	agent_steps: list[str],
 	screenshot_paths: list[str],
 	max_images: int = 10,
+	ground_truth: str | None = None,
+	use_vision: bool | Literal['auto'] = True,
 ) -> list[BaseMessage]:
 	"""
 	Construct messages for judge evaluation of agent trace.
@@ -55,6 +59,7 @@ def construct_judge_messages(
 		agent_steps: List of formatted agent step descriptions
 		screenshot_paths: List of screenshot file paths
 		max_images: Maximum number of screenshots to include
+		ground_truth: Optional ground truth answer or criteria that must be satisfied for success
 
 	Returns:
 		List of messages for LLM judge evaluation
@@ -64,27 +69,42 @@ def construct_judge_messages(
 	steps_text = '\n'.join(agent_steps)
 	steps_text_truncated = _truncate_text(steps_text, 40000)
 
-	# Select last N screenshots
-	selected_screenshots = screenshot_paths[-max_images:] if len(screenshot_paths) > max_images else screenshot_paths
-
-	# Encode screenshots
+	# Only include screenshots if use_vision is not False
 	encoded_images: list[ContentPartImageParam] = []
-	for img_path in selected_screenshots:
-		encoded = _encode_image(img_path)
-		if encoded:
-			encoded_images.append(
-				ContentPartImageParam(
-					image_url=ImageURL(
-						url=f'data:image/png;base64,{encoded}',
-						media_type='image/png',
+	if use_vision is not False:
+		# Select last N screenshots
+		selected_screenshots = screenshot_paths[-max_images:] if len(screenshot_paths) > max_images else screenshot_paths
+
+		# Encode screenshots
+		for img_path in selected_screenshots:
+			encoded = _encode_image(img_path)
+			if encoded:
+				encoded_images.append(
+					ContentPartImageParam(
+						image_url=ImageURL(
+							url=f'data:image/png;base64,{encoded}',
+							media_type='image/png',
+						)
 					)
 				)
-			)
 
-	# System prompt for judge
-	system_prompt = """You are an expert judge evaluating browser automation agent performance.
+	# System prompt for judge - conditionally add ground truth section
+	ground_truth_section = ''
+	if ground_truth:
+		ground_truth_section = """
+**GROUND TRUTH VALIDATION (HIGHEST PRIORITY):**
+The <ground_truth> section contains verified correct information for this task. This can be:
+- **Evaluation criteria**: Specific conditions that must be met (e.g., "The success popup should show up", "Must extract exactly 5 items")
+- **Factual answers**: The correct answer to a question or information retrieval task (e.g. "10/11/24", "Paris")
+- **Expected outcomes**: What should happen after task completion (e.g., "Google Doc must be created", "File should be downloaded")
+
+The ground truth takes ABSOLUTE precedence over all other evaluation criteria. If the ground truth is not satisfied by the agent's execution and final response, the verdict MUST be false.
+"""
+
+	system_prompt = f"""You are an expert judge evaluating browser automation agent performance.
 
 <evaluation_framework>
+{ground_truth_section}
 **PRIMARY EVALUATION CRITERIA (in order of importance):**
 1. **Task Satisfaction (Most Important)**: Did the agent accomplish what the user asked for? Break down the task into the key criteria and evaluate if the agent all of them. Focus on user intent and final outcome.
 2. **Output Quality**: Is the final result in the correct format and complete? Does it match exactly what was requested?
@@ -122,6 +142,28 @@ def construct_judge_messages(
 - The agent made up content that is not in the screenshot or the page state
 - The agent calls done action before completing all key points of the task
 
+**IMPOSSIBLE TASK DETECTION:**
+Set `impossible_task` to true when the task fundamentally could not be completed due to:
+- Vague or ambiguous task instructions that cannot be reasonably interpreted
+- Website genuinely broken or non-functional (be conservative - temporary issues don't count)
+- Required links/pages truly inaccessible (404, 403, etc.)
+- Task requires authentication/login but no credentials were provided
+- Task asks for functionality that doesn't exist on the target site
+- Other insurmountable external obstacles beyond the agent's control
+
+Do NOT mark as impossible if:
+- Agent made poor decisions but task was achievable
+- Temporary page loading issues that could be retried
+- Agent didn't try the right approach
+- Website works but agent struggled with it
+
+**CAPTCHA DETECTION:**
+Set `reached_captcha` to true if:
+- Screenshots show captcha challenges (reCAPTCHA, hCaptcha, etc.)
+- Agent reports being blocked by bot detection
+- Error messages indicate captcha/verification requirements
+- Any evidence the agent encountered anti-bot measures during execution
+
 **IMPORTANT EVALUATION NOTES:**
 - **evaluate for action** - For each key step of the trace, double check whether the action that the agent tried to performed actually happened. If the required action did not actually occur, the verdict should be false.
 - **screenshot is not entire content** - The agent has the entire DOM content, but the screenshot is only part of the content. If the agent extracts information from the page, but you do not see it in the screenshot, you can assume this information is there.
@@ -136,18 +178,29 @@ def construct_judge_messages(
 Respond with EXACTLY this JSON structure (no additional text before or after):
 
 {{
-	"reasoning": "Breakdown of user task into key points. Detailed analysis covering: what went well, what didn't work, trajectory quality assessment, tool usage evaluation, output quality review, and overall user satisfaction prediction",
+	"reasoning": "Breakdown of user task into key points. Detailed analysis covering: what went well, what didn't work, trajectory quality assessment, tool usage evaluation, output quality review, and overall user satisfaction prediction.",
 	"verdict": true or false,
-	"failure_reason": "If verdict is false, provide the key reason why the task was not completed successfully. If verdict is true, use an empty string."
+	"failure_reason": "Max 5 sentences explanation of why the task was not completed successfully in case of failure. If verdict is true, use an empty string.",
+	"impossible_task": true or false,
+	"reached_captcha": true or false
 }}
 </response_format>
+"""
+
+	# Build user prompt with conditional ground truth section
+	ground_truth_prompt = ''
+	if ground_truth:
+		ground_truth_prompt = f"""
+<ground_truth>
+{ground_truth}
+</ground_truth>
 """
 
 	user_prompt = f"""
 <task>
 {task_truncated or 'No task provided'}
 </task>
-
+{ground_truth_prompt}
 <agent_trajectory>
 {steps_text_truncated or 'No agent trajectory provided'}
 </agent_trajectory>
@@ -167,4 +220,55 @@ Evaluate this agent execution given the criteria and respond with the exact JSON
 	return [
 		SystemMessage(content=system_prompt),
 		UserMessage(content=content_parts),
+	]
+
+
+def construct_simple_judge_messages(
+	task: str,
+	final_result: str,
+) -> list[BaseMessage]:
+	"""Construct lightweight judge messages to validate agent success claims.
+
+	Always runs regardless of use_judge setting. Text-only — no screenshots,
+	no trajectory. Just task + final result.
+	"""
+	task_truncated = _truncate_text(task, 20000)
+	final_result_truncated = _truncate_text(final_result, 20000)
+
+	current_date = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+
+	system_prompt = f"""You are a strict verifier checking whether a browser automation agent actually completed its task.
+
+Today's date is {current_date}. The agent ran recently — dates near today are expected and NOT fabricated.
+
+Given the task and the agent's final response, determine if the response genuinely satisfies ALL requirements.
+
+Check for these common failure patterns:
+1. **Incorrect data**: Wrong number of items, missing filters/criteria, wrong format
+2. **Unverified actions**: Agent claims to have submitted a form, posted a comment, or saved a file but there's no evidence
+3. **Incomplete results**: Some requirements from the task are not addressed in the response
+4. **Fabricated content**: Data that looks plausible but wasn't actually extracted from any page. NOTE: dates and times close to today's date ({current_date}) are NOT fabricated — the agent browses live websites and extracts real-time content.
+5. **Partial completion reported as success**: Response acknowledges failure or blockers (captcha, access denied, etc.) but still claims success
+
+Respond with EXACTLY this JSON structure:
+{{
+	"is_correct": true or false,
+	"reason": "Brief explanation if not correct, empty string if correct"
+}}
+
+Be strict: if the response doesn't clearly satisfy every requirement, set is_correct to false."""
+
+	user_prompt = f"""<task>
+{task_truncated or 'No task provided'}
+</task>
+
+<agent_final_response>
+{final_result_truncated or 'No response provided'}
+</agent_final_response>
+
+Does the agent's response fully satisfy all requirements of the task? Respond with the JSON structure."""
+
+	return [
+		SystemMessage(content=system_prompt),
+		UserMessage(content=user_prompt),
 	]
