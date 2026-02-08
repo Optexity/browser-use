@@ -567,14 +567,14 @@ class DOMWatchdog(BaseWatchdog):
 				)
 
 			# Get serialized DOM tree using the service
-			self.logger.debug('🔍 DOMWatchdog._build_dom_tree_without_highlights: Calling DomService.get_serialized_dom_tree...')
+			self.logger.info('🔍 DOMWatchdog._build_dom_tree_without_highlights: Calling DomService.get_serialized_dom_tree...')
 			start = time.time()
 			self.current_dom_state, self.enhanced_dom_tree, timing_info = await self._dom_service.get_serialized_dom_tree(
 				previous_cached_state=previous_state,
 			)
 			end = time.time()
 			total_time_ms = (end - start) * 1000
-			self.logger.debug(
+			self.logger.info(
 				'🔍 DOMWatchdog._build_dom_tree_without_highlights: ✅ DomService.get_serialized_dom_tree completed'
 			)
 
@@ -663,20 +663,20 @@ class DOMWatchdog(BaseWatchdog):
 				timing_lines.append(f'  ⚠️  untracked_time: {untracked_time_ms:.2f}ms')
 
 			# Single log call with all timing info
-			self.logger.debug('\n'.join(timing_lines))
+			self.logger.info('\n'.join(timing_lines))
 
 			# Update selector map for other watchdogs
-			self.logger.debug('🔍 DOMWatchdog._build_dom_tree_without_highlights: Updating selector maps...')
+			self.logger.info('🔍 DOMWatchdog._build_dom_tree_without_highlights: Updating selector maps...')
 			self.selector_map = self.current_dom_state.selector_map
 			# Update BrowserSession's cached selector map
 			if self.browser_session:
 				self.browser_session.update_cached_selector_map(self.selector_map)
-			self.logger.debug(
+			self.logger.info(
 				f'🔍 DOMWatchdog._build_dom_tree_without_highlights: ✅ Selector maps updated, {len(self.selector_map)} elements'
 			)
 
 			# Skip JavaScript highlighting injection - Python highlighting will be applied later
-			self.logger.debug('🔍 DOMWatchdog._build_dom_tree_without_highlights: ✅ COMPLETED DOM tree build (no JS highlights)')
+			self.logger.info('🔍 DOMWatchdog._build_dom_tree_without_highlights: ✅ COMPLETED DOM tree build (no JS highlights)')
 			return self.current_dom_state
 
 		except Exception as e:
