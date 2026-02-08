@@ -1303,10 +1303,12 @@ class BrowserSession(BaseModel):
 	@observe_debug(ignore_input=True, ignore_output=True, name='get_browser_state_summary')
 	async def get_browser_state_summary(
 		self,
+		summary_id: str,
 		include_screenshot: bool = True,
 		cached: bool = False,
 		include_recent_events: bool = False,
 	) -> BrowserStateSummary:
+		self.logger.info(f'🔍 get_browser_state_summary: summary_id: {summary_id}')
 		if cached and self._cached_browser_state_summary is not None and self._cached_browser_state_summary.dom_state:
 			# Don't use cached state if it has 0 interactive elements
 			selector_map = self._cached_browser_state_summary.dom_state.selector_map
@@ -1327,6 +1329,7 @@ class BrowserSession(BaseModel):
 			BrowserStateRequestEvent,
 			self.event_bus.dispatch(
 				BrowserStateRequestEvent(
+					summary_id=summary_id,
 					include_dom=True,
 					include_screenshot=include_screenshot,
 					include_recent_events=include_recent_events,

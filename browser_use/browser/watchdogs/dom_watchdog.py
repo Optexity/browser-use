@@ -251,6 +251,7 @@ class DOMWatchdog(BaseWatchdog):
 			Complete BrowserStateSummary with DOM, screenshot, and target info
 		"""
 		from browser_use.browser.views import BrowserStateSummary, PageInfo
+		self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: summary_id: {event.summary_id}')
 
 		self.logger.debug('🔍 DOMWatchdog.on_BrowserStateRequestEvent: STARTING browser state request')
 		page_url = await self.browser_session.get_current_page_url()
@@ -331,7 +332,7 @@ class DOMWatchdog(BaseWatchdog):
 						pixels_left=0,
 						pixels_right=0,
 					)
-
+				self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: Returning empty browser state summary for summary_id: {event.summary_id}')
 				return BrowserStateSummary(
 					dom_state=content,
 					url=page_url,
@@ -495,12 +496,14 @@ class DOMWatchdog(BaseWatchdog):
 				self.browser_session._original_viewport_size = (page_info.viewport_width, page_info.viewport_height)
 
 			self.logger.debug('🔍 DOMWatchdog.on_BrowserStateRequestEvent: ✅ COMPLETED - Returning browser state')
+			self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: Returning browser state summary for summary_id: {event.summary_id}')
 			return browser_state
 
 		except Exception as e:
 			self.logger.error(f'Failed to get browser state: {e}')
 
 			# Return minimal recovery state
+			self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: Returning minimal recovery state for summary_id: {event.summary_id}')
 			return BrowserStateSummary(
 				dom_state=SerializedDOMState(_root=None, selector_map={}),
 				url=page_url if 'page_url' in locals() else '',
@@ -530,6 +533,8 @@ class DOMWatchdog(BaseWatchdog):
 				if hasattr(self, 'browser_session') and self.browser_session is not None
 				else [],
 			)
+		
+		self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: Returning minimal recovery state for summary_id: {event.summary_id}')
 
 	@time_execution_async('build_dom_tree_without_highlights')
 	@observe_debug(ignore_input=True, ignore_output=True, name='build_dom_tree_without_highlights')

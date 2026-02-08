@@ -194,6 +194,7 @@ class ScreenshotEvent(BaseEvent[str]):
 class BrowserStateRequestEvent(BaseEvent[BrowserStateSummary]):
 	"""Request current browser state."""
 
+	summary_id: str
 	include_dom: bool = True
 	include_screenshot: bool = True
 	include_recent_events: bool = False
