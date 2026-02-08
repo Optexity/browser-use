@@ -251,19 +251,22 @@ class DOMWatchdog(BaseWatchdog):
 			Complete BrowserStateSummary with DOM, screenshot, and target info
 		"""
 		from browser_use.browser.views import BrowserStateSummary, PageInfo
+		import time
+		start_time = time.time()
 		self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: summary_id: {event.summary_id}')
-
+		self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: running time 1: {time.time() - start_time}')
 		self.logger.debug('🔍 DOMWatchdog.on_BrowserStateRequestEvent: STARTING browser state request')
 		page_url = await self.browser_session.get_current_page_url()
 		self.logger.debug(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: Got page URL: {page_url}')
+		self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: running time 2: {time.time() - start_time}')
 
 		# Get focused session for logging (validation already done by get_current_page_url)
 		if self.browser_session.agent_focus_target_id:
 			self.logger.debug(f'Current page URL: {page_url}, target_id: {self.browser_session.agent_focus_target_id}')
-
+		self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: running time 3: {time.time() - start_time}')
 		# check if we should skip DOM tree build for pointless pages
 		not_a_meaningful_website = page_url.lower().split(':', 1)[0] not in ('http', 'https')
-
+		self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: running time 4: {time.time() - start_time}')
 		# Check for pending network requests BEFORE waiting (so we can see what's loading)
 		pending_requests_before_wait = []
 		if not not_a_meaningful_website:
@@ -273,26 +276,30 @@ class DOMWatchdog(BaseWatchdog):
 					self.logger.debug(f'🔍 Found {len(pending_requests_before_wait)} pending requests before stability wait')
 			except Exception as e:
 				self.logger.debug(f'Failed to get pending requests before wait: {e}')
+		self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: running time 5: {time.time() - start_time}')
 		pending_requests = pending_requests_before_wait
+		self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: running time 6: {time.time() - start_time}')
 		# Wait for page stability using browser profile settings (main branch pattern)
 		if not not_a_meaningful_website:
 			self.logger.debug('🔍 DOMWatchdog.on_BrowserStateRequestEvent: ⏳ Waiting for page stability...')
+			self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: running time 7: {time.time() - start_time}')
 			try:
 				if pending_requests_before_wait:
 					# Reduced from 1s to 0.3s for faster DOM builds while still allowing critical resources to load
 					await asyncio.sleep(0.3)
 				self.logger.debug('🔍 DOMWatchdog.on_BrowserStateRequestEvent: ✅ Page stability complete')
+				self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: running time 8: {time.time() - start_time}')
 			except Exception as e:
 				self.logger.warning(
 					f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: Network waiting failed: {e}, continuing anyway...'
 				)
-
+				self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: running time 9: {time.time() - start_time}')
 		# Get tabs info once at the beginning for all paths
 		self.logger.debug('🔍 DOMWatchdog.on_BrowserStateRequestEvent: Getting tabs info...')
 		tabs_info = await self.browser_session.get_tabs()
 		self.logger.debug(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: Got {len(tabs_info)} tabs')
 		self.logger.debug(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: Tabs info: {tabs_info}')
-
+		self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: running time 10: {time.time() - start_time}')
 		# Get viewport / scroll position info, remember changing scroll position should invalidate selector_map cache because it only includes visible elements
 		# cdp_session = await self.browser_session.get_or_create_cdp_session(focus=True)
 		# scroll_info = await cdp_session.cdp_client.send.Runtime.evaluate(
@@ -300,24 +307,26 @@ class DOMWatchdog(BaseWatchdog):
 		# 	session_id=cdp_session.session_id,
 		# )
 		# self.logger.debug(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: Got scroll info: {scroll_info["result"]}')
-
+		self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: running time 11: {time.time() - start_time}')
 		try:
 			# Fast path for empty pages
 			if not_a_meaningful_website:
 				self.logger.debug(f'⚡ Skipping BuildDOMTree for empty target: {page_url}')
 				self.logger.debug(f'📸 Not taking screenshot for empty page: {page_url} (non-http/https URL)')
-
+				self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: running time 12: {time.time() - start_time}')
 				# Create minimal DOM state
 				content = SerializedDOMState(_root=None, selector_map={})
-
+				self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: running time 13: {time.time() - start_time}')
 				# Skip screenshot for empty pages
 				screenshot_b64 = None
-
+				self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: running time 14: {time.time() - start_time}')
 				# Try to get page info from CDP, fall back to defaults if unavailable
 				try:
 					page_info = await self._get_page_info()
+					self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: running time 15: {time.time() - start_time}')
 				except Exception as e:
 					self.logger.debug(f'Failed to get page info from CDP for empty page: {e}, using fallback')
+					self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: running time 16: {time.time() - start_time}')
 					# Use default viewport dimensions
 					viewport = self.browser_session.browser_profile.viewport or {'width': 1280, 'height': 720}
 					page_info = PageInfo(
@@ -332,6 +341,7 @@ class DOMWatchdog(BaseWatchdog):
 						pixels_left=0,
 						pixels_right=0,
 					)
+				self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: running time 17: {time.time() - start_time}')
 				self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: Returning empty browser state summary for summary_id: {event.summary_id}')
 				return BrowserStateSummary(
 					dom_state=content,
@@ -349,28 +359,28 @@ class DOMWatchdog(BaseWatchdog):
 					pagination_buttons=[],  # Empty page has no pagination
 					closed_popup_messages=self.browser_session._closed_popup_messages.copy(),
 				)
-
+			self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: running time 18: {time.time() - start_time}')
 			# Execute DOM building and screenshot capture in parallel
 			dom_task = None
 			screenshot_task = None
-
+			self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: running time 19: {time.time() - start_time}')
 			# Start DOM building task if requested
 			if event.include_dom:
 				self.logger.debug('🔍 DOMWatchdog.on_BrowserStateRequestEvent: 🌳 Starting DOM tree build task...')
-
+				self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: running time 20: {time.time() - start_time}')
 				previous_state = (
 					self.browser_session._cached_browser_state_summary.dom_state
 					if self.browser_session._cached_browser_state_summary
 					else None
 				)
-
+				self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: running time 21: {time.time() - start_time}')
 				dom_task = create_task_with_error_handling(
 					self._build_dom_tree_without_highlights(previous_state),
 					name='build_dom_tree',
 					logger_instance=self.logger,
 					suppress_exceptions=True,
 				)
-
+			self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: running time 22: {time.time() - start_time}')
 			# Start clean screenshot task if requested (without JS highlights)
 			if event.include_screenshot:
 				self.logger.debug('🔍 DOMWatchdog.on_BrowserStateRequestEvent: 📸 Starting clean screenshot task...')
@@ -381,10 +391,12 @@ class DOMWatchdog(BaseWatchdog):
 					suppress_exceptions=True,
 				)
 
+			self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: running time 23: {time.time() - start_time}')
+
 			# Wait for both tasks to complete
 			content = None
 			screenshot_b64 = None
-
+			self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: running time 24: {time.time() - start_time}')
 			if dom_task:
 				try:
 					content = await dom_task
@@ -394,7 +406,7 @@ class DOMWatchdog(BaseWatchdog):
 					content = SerializedDOMState(_root=None, selector_map={})
 			else:
 				content = SerializedDOMState(_root=None, selector_map={})
-
+			self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: running time 25: {time.time() - start_time}')
 			if screenshot_task:
 				try:
 					screenshot_b64 = await screenshot_task
@@ -402,7 +414,7 @@ class DOMWatchdog(BaseWatchdog):
 				except Exception as e:
 					self.logger.warning(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: Clean screenshot failed: {e}')
 					screenshot_b64 = None
-
+			self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: running time 26: {time.time() - start_time}')
 			# Add browser-side highlights for user visibility
 			if content and content.selector_map and self.browser_session.browser_profile.dom_highlight_elements:
 				try:
@@ -413,11 +425,11 @@ class DOMWatchdog(BaseWatchdog):
 					)
 				except Exception as e:
 					self.logger.warning(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: Browser highlighting failed: {e}')
-
+			self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: running time 27: {time.time() - start_time}')
 			# Ensure we have valid content
 			if not content:
 				content = SerializedDOMState(_root=None, selector_map={})
-
+			self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: running time 28: {time.time() - start_time}')
 			# Tabs info already fetched at the beginning
 
 			# Get target title safely
@@ -428,7 +440,7 @@ class DOMWatchdog(BaseWatchdog):
 			except Exception as e:
 				self.logger.debug(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: Failed to get title: {e}')
 				title = 'Page'
-
+			self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: running time 29: {time.time() - start_time}')
 			# Get comprehensive page info from CDP with timeout
 			try:
 				self.logger.debug('🔍 DOMWatchdog.on_BrowserStateRequestEvent: Getting page info from CDP...')
@@ -452,15 +464,15 @@ class DOMWatchdog(BaseWatchdog):
 					pixels_left=0,
 					pixels_right=0,
 				)
-
+			self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: running time 30: {time.time() - start_time}')
 			# Check for PDF viewer
 			is_pdf_viewer = page_url.endswith('.pdf') or '/pdf/' in page_url
-
+			self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: running time 31: {time.time() - start_time}')
 			# Detect pagination buttons from the DOM
 			pagination_buttons_data = []
 			if content and content.selector_map:
 				pagination_buttons_data = self._detect_pagination_buttons(content.selector_map)
-
+			self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: running time 32: {time.time() - start_time}')
 			# Build and cache the browser state summary
 			if screenshot_b64:
 				self.logger.debug(
@@ -470,7 +482,7 @@ class DOMWatchdog(BaseWatchdog):
 				self.logger.debug(
 					'🔍 DOMWatchdog.on_BrowserStateRequestEvent: 📸 Creating BrowserStateSummary WITHOUT screenshot'
 				)
-
+			self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: running time 33: {time.time() - start_time}')	
 			browser_state = BrowserStateSummary(
 				dom_state=content,
 				url=page_url,
@@ -486,15 +498,15 @@ class DOMWatchdog(BaseWatchdog):
 				pending_network_requests=pending_requests,
 				pagination_buttons=pagination_buttons_data,
 				closed_popup_messages=self.browser_session._closed_popup_messages.copy(),
-			)
-
+			)	
+			self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: running time 34: {time.time() - start_time}')
 			# Cache the state
 			self.browser_session._cached_browser_state_summary = browser_state
-
+			self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: running time 35: {time.time() - start_time}')
 			# Cache viewport size for coordinate conversion (if llm_screenshot_size is enabled)
 			if page_info:
 				self.browser_session._original_viewport_size = (page_info.viewport_width, page_info.viewport_height)
-
+			self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: running time 36: {time.time() - start_time}')
 			self.logger.debug('🔍 DOMWatchdog.on_BrowserStateRequestEvent: ✅ COMPLETED - Returning browser state')
 			self.logger.info(f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: Returning browser state summary for summary_id: {event.summary_id}')
 			return browser_state
