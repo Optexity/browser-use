@@ -3,6 +3,7 @@ import gc
 import inspect
 import json
 import logging
+import os
 import re
 import tempfile
 import time
@@ -163,6 +164,8 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		use_vision: bool | Literal['auto'] = True,
 		save_conversation_path: str | Path | None = None,
 		save_conversation_path_encoding: str | None = 'utf-8',
+		step_cache_path: str | Path | None = None,
+		step_cache_url: str | None = None,
 		max_failures: int = 3,
 		override_system_message: str | None = None,
 		extend_system_message: str | None = None,
@@ -535,6 +538,8 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		# Callbacks
 		self.register_new_step_callback = register_new_step_callback
 		self.register_done_callback = register_done_callback
+		self.step_cache_path = step_cache_path or os.environ.get('BROWSER_USE_STEP_CACHE_PATH')
+		self.step_cache_url = step_cache_url
 		self.register_should_stop_callback = register_should_stop_callback
 		self.register_external_agent_status_raise_error_callback = register_external_agent_status_raise_error_callback
 
@@ -2351,6 +2356,12 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 			# Log final messages to user based on outcome
 			self._log_final_outcome_messages()
 
+			if self.step_cache_path:
+				try:
+					self.save_step_cache()
+				except Exception as cache_error:
+					self.logger.warning(f'Failed to save step cache: {cache_error}')
+
 			# Stop the event bus gracefully, waiting for all events to be processed
 			# Configurable via TIMEOUT_AgentEventBusStop env var (default: 3.0s)
 			await self.eventbus.stop(timeout=_get_timeout('TIMEOUT_AgentEventBusStop', 3.0))
@@ -3507,6 +3518,20 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		if not file_path:
 			file_path = 'AgentHistory.json'
 		self.history.save_to_file(file_path, sensitive_data=self.sensitive_data)
+
+	def save_step_cache(self, file_path: str | Path | None = None, start_url: str | None = None) -> None:
+		"""Derive deterministic Playwright steps from this run and write step_cache.json."""
+		from browser_use.learning.step_cache import save_step_cache as _save_step_cache
+
+		target = file_path or self.step_cache_path
+		if not target:
+			raise ValueError('step_cache_path is not configured')
+		_save_step_cache(
+			self.history,
+			target,
+			start_url=start_url or self.step_cache_url,
+			task=self.task,
+		)
 
 	def pause(self) -> None:
 		"""Pause the agent before the next step"""
