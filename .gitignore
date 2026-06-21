@@ -84,3 +84,8 @@ product_extraction.py
 plot.py
 
 .claude/
+
+#exception cached_memory JSONL files
+!cached_memory/
+!cached_memory/*.jsonl
+!cached_memory/*.json
