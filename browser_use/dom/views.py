@@ -965,6 +965,12 @@ class DOMInteractedElement:
 	# Accessibility name (visible text) - used for fallback matching when hash/xpath fail
 	ax_name: str | None = None
 
+	# Whether this element lives inside a shadow root. Computed once here from the
+	# live parent_node chain because DOMInteractedElement itself is a flat snapshot
+	# with no parent references - callers (e.g. the automation cache exporter) need
+	# this to avoid emitting xpath locators, which cannot pierce shadow roots.
+	in_shadow_dom: bool = False
+
 	def to_dict(self) -> dict[str, Any]:
 		return {
 			'node_id': self.node_id,
@@ -979,7 +985,23 @@ class DOMInteractedElement:
 			'stable_hash': self.stable_hash,
 			'bounds': self.bounds.to_dict() if self.bounds else None,
 			'ax_name': self.ax_name,
+			'in_shadow_dom': self.in_shadow_dom,
 		}
+
+	@staticmethod
+	def _compute_in_shadow_dom(enhanced_dom_tree: EnhancedDOMTreeNode) -> bool:
+		"""Walk up the parent chain looking for a shadow root (DOCUMENT_FRAGMENT_NODE).
+
+		Mirrors the boundary check EnhancedDOMTreeNode.xpath silently passes through -
+		any ancestor that is a shadow root means the resulting xpath cannot be used
+		with Playwright's document-level xpath engine.
+		"""
+		current_element = enhanced_dom_tree.parent_node
+		while current_element is not None:
+			if current_element.node_type == NodeType.DOCUMENT_FRAGMENT_NODE:
+				return True
+			current_element = current_element.parent_node
+		return False
 
 	@classmethod
 	def load_from_enhanced_dom_tree(cls, enhanced_dom_tree: EnhancedDOMTreeNode) -> 'DOMInteractedElement':
@@ -1001,4 +1023,5 @@ class DOMInteractedElement:
 			element_hash=hash(enhanced_dom_tree),
 			stable_hash=enhanced_dom_tree.compute_stable_hash(),  # Compute from source for single source of truth
 			ax_name=ax_name,
+			in_shadow_dom=cls._compute_in_shadow_dom(enhanced_dom_tree),
 		)
