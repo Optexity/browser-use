@@ -33,6 +33,7 @@ _ACTION_TYPE_BY_KEY = {
 	'click': 'click',
 	'select_dropdown': 'select',
 	'navigate': 'navigate',
+	'send_keys': 'key_press',
 }
 
 # Param name holding the human-entered value, per action key (used for
@@ -42,6 +43,7 @@ _VALUE_PARAM_BY_KEY = {
 	'input': 'text',
 	'select_dropdown': 'text',
 	'navigate': 'url',
+	'send_keys': 'keys',
 }
 
 _PASSWORD_PATTERN = re.compile(r'pass(word)?|pwd', re.IGNORECASE)
@@ -71,6 +73,8 @@ class ExportedAction:
 	success: bool
 	element: ExportedElement | None
 	caused_navigation: bool
+	page_url: str | None
+	next_page_url: str | None
 	raw: dict[str, Any]
 
 
@@ -109,7 +113,10 @@ def _build_element(element: DOMInteractedElement | None) -> ExportedElement | No
 		id=attrs.get('id'),
 		name=attrs.get('name'),
 		placeholder=attrs.get('placeholder'),
-		aria_label=attrs.get('aria-label') or element.ax_name,
+		# Keep aria_label as the real DOM attribute only. ax_name already goes
+		# into visible_text; inventing aria-label from it makes Playwright
+		# locators like [aria-label=...] miss elements that have no such attr.
+		aria_label=attrs.get('aria-label'),
 		role=attrs.get('role'),
 		visible_text=element.ax_name,
 		data_attrs={k: v for k, v in attrs.items() if k.startswith('data-')},
@@ -180,6 +187,8 @@ def export_agent_history(
 				success=result.error is None,
 				element=_build_element(element),
 				caused_navigation=step_caused_navigation,
+				page_url=state.url if state else None,
+				next_page_url=next_state.url if next_state else None,
 				raw={
 					'action_key': action_key,
 					'action_params': raw_action,

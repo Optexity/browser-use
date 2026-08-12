@@ -126,6 +126,34 @@ class TestRuleBasedStepFilter:
 		assert merged[0]['action_type'] == 'click'
 		assert merged[0]['element']['element_hash'] == 'hash_focus'
 
+	def test_merges_input_then_enter_keypress(self):
+		records = [
+			_rec(
+				step_index=1,
+				action_type='input_text',
+				element_hash='hash_search',
+				name='q',
+				typed_value='NVDA',
+			),
+			{
+				'step_index': 1,
+				'action_type': 'key_press',
+				'typed_value': 'Enter',
+				'success': True,
+				'element': None,
+				'caused_navigation': True,
+				'next_page_url': 'https://example.com/nvda',
+				'raw': {'action_key': 'send_keys'},
+			},
+		]
+		kept, discarded = filter_steps(records)
+		assert len(kept) == 1
+		assert kept[0]['action_type'] == 'input_text'
+		assert kept[0]['press_enter'] is True
+		assert kept[0]['caused_navigation'] is True
+		assert kept[0]['next_page_url'] == 'https://example.com/nvda'
+		assert any(d['reason'] == 'merged_enter_keypress_into_preceding_input' for d in discarded)
+
 	def test_protocol_swap_uses_injected_filter(self):
 		class KeepNothing:
 			def filter_steps(self, records):

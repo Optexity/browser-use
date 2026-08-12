@@ -21,7 +21,9 @@ logger = logging.getLogger(__name__)
 # Action types that mutate page state and are therefore candidates for replay.
 # Everything else (done / extract / scroll / thinking / screenshot / ...) is
 # dropped by rule 1 as non-browser.
-_MUTATING_ACTION_TYPES = frozenset({'input_text', 'click', 'select', 'navigate', 'upload'})
+_MUTATING_ACTION_TYPES = frozenset(
+	{'input_text', 'click', 'select', 'navigate', 'upload', 'key_press'}
+)
 
 
 class StepFilter(Protocol):
@@ -87,7 +89,9 @@ class RuleBasedStepFilter:
 				after_rule2.append(record)
 
 		# Rule 3: merge click-to-focus immediately followed by typing into the
-		# same element into one input_text step (discard the click).
+		# same element into one input_text step (discard the click). Also merge
+		# input_text immediately followed by Enter key_press into one input_text
+		# with press_enter=True (search-box submit pattern).
 		after_rule3: list[dict[str, Any]] = []
 		i = 0
 		while i < len(after_rule2):
@@ -106,6 +110,28 @@ class RuleBasedStepFilter:
 					discarded,
 				)
 				after_rule3.append(nxt)
+				i += 2
+				continue
+			if (
+				nxt is not None
+				and current.get('action_type') == 'input_text'
+				and nxt.get('action_type') == 'key_press'
+				and str(nxt.get('typed_value') or '').lower() in {'enter', 'return'}
+			):
+				merged = dict(current)
+				merged['press_enter'] = True
+				# Prefer navigation signal from either half of the merge.
+				merged['caused_navigation'] = bool(current.get('caused_navigation')) or bool(
+					nxt.get('caused_navigation')
+				)
+				if nxt.get('next_page_url'):
+					merged['next_page_url'] = nxt.get('next_page_url')
+				_discard(nxt, 'merged_enter_keypress_into_preceding_input', discarded)
+				logger.info(
+					f'kept step_index={merged.get("step_index")} action_type=input_text: '
+					f'merged_with_following_enter_keypress'
+				)
+				after_rule3.append(merged)
 				i += 2
 				continue
 			after_rule3.append(current)
