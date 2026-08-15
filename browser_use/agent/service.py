@@ -2154,6 +2154,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		on_step_end: AgentHookFunc | None = None,
 	) -> AgentHistoryList[AgentStructuredOutput]:
 		"""Execute the task with maximum number of steps"""
+		run_started_at = time.perf_counter()
 
 		loop = asyncio.get_event_loop()
 		agent_run_error: str | None = None  # Initialize error tracking variable
@@ -2306,6 +2307,25 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 			raise e
 
 		finally:
+			# TokenCost already tracks every registered LLM call. Emit one
+			# machine-readable baseline here so agentic and cached runs can be
+			# compared without introducing a second token-accounting path.
+			try:
+				usage = self.history.usage or await self.token_cost_service.get_usage_summary()
+				self.history.usage = usage
+				run_metrics = {
+					'llm_invocations': usage.entry_count,
+					'input_tokens': usage.total_prompt_tokens,
+					'output_tokens': usage.total_completion_tokens,
+					'total_tokens': usage.total_tokens,
+					'cost_usd': usage.total_cost,
+					'duration_seconds': round(time.perf_counter() - run_started_at, 3),
+				}
+				self.logger.info(f'📊 Browser-use run metrics: {json.dumps(run_metrics, sort_keys=True)}')
+			except Exception as metrics_error:
+				# Metrics must never change the outcome of the browser task.
+				self.logger.warning(f'Unable to log browser-use run metrics: {metrics_error}')
+
 			if should_delay_close and self._demo_mode_enabled and agent_run_error is None:
 				await asyncio.sleep(30)
 			if agent_run_error:
