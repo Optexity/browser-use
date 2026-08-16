@@ -40,6 +40,8 @@
 
 🌤️ Want to skip the setup? Use our <b>[cloud](https://cloud.browser-use.com)</b> for faster, scalable, stealth-enabled browser automation!
 
+This fork also contains the website-agnostic [Browser history action cache](HISTORY_CACHE.md) used by Optexity's cross-run procedural-memory experiment.
+
 # 🤖 LLM Quickstart
 
 1. Direct your favorite coding agent (Cursor, Claude Code, etc) to [Agents.md](https://docs.browser-use.com/llms-full.txt)
