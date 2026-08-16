@@ -28,6 +28,7 @@ _LOCATOR_ATTRIBUTE_PRIORITY: tuple[tuple[str, int], ...] = (
 	('data-qa', 98),
 	('id', 92),
 	('name', 84),
+	('title', 68),
 )
 _LOCATOR_RELEVANT_ATTRIBUTES = frozenset(
 	{
@@ -40,6 +41,7 @@ _LOCATOR_RELEVANT_ATTRIBUTES = frozenset(
 		'name',
 		'aria-label',
 		'placeholder',
+		'title',
 		'role',
 		'type',
 	}
@@ -249,6 +251,7 @@ def _readable_locator_name(attribute_name: str) -> str:
 		'data-qa': 'data_qa_attribute',
 		'id': 'id_attribute',
 		'name': 'name_attribute',
+		'title': 'title_attribute',
 	}.get(attribute_name, f'{attribute_name}_attribute')
 
 

@@ -12,10 +12,10 @@ from browser_use.agent.history_cache.models import (
 	BrowserUseActionCache,
 	CachedAutomationDecision,
 	CachedAutomationDecisionStatus,
+	CachedStepCandidate,
 	CacheStatus,
 	CompilationIssue,
 	ConversionSummary,
-	DeterministicStepCandidate,
 	HistoryCompilationError,
 	HistoryLocation,
 	ObservedStep,
@@ -44,7 +44,7 @@ def compile_history_data(
 
 	issues: list[CompilationIssue] = []
 	observed_steps: list[ObservedStep] = []
-	deterministic_candidates: list[DeterministicStepCandidate] = []
+	deterministic_candidates: list[CachedStepCandidate] = []
 	starting_url: str | None = None
 	run_completed = False
 	run_succeeded: bool | None = None
@@ -208,9 +208,7 @@ def compile_history_data(
 			if action_name == 'done' and result_present and isinstance(raw_result, Mapping):
 				if raw_result.get('is_done') is True:
 					run_completed = True
-					# TODO: Derive this summary from ``execution_result`` so a
-					# contradictory success/error result cannot look successful here.
-					run_succeeded = raw_result.get('success') if isinstance(raw_result.get('success'), bool) else None
+					run_succeeded = execution_result.status == BrowserActionExecutionStatus.TASK_COMPLETED_SUCCESSFULLY
 					action_success = action_arguments.get('success')
 					if isinstance(action_success, bool) and run_succeeded is not None and action_success != run_succeeded:
 						issues.append(
@@ -225,7 +223,10 @@ def compile_history_data(
 		deterministic_candidates = []
 		for observed_step in observed_steps:
 			decision = observed_step.cached_automation_decision
-			if decision.decision != CachedAutomationDecisionStatus.WAITING_FOR_LOCATOR_VALIDATION:
+			if decision.decision not in {
+				CachedAutomationDecisionStatus.WAITING_FOR_LOCATOR_VALIDATION,
+				CachedAutomationDecisionStatus.READY_FOR_REPLAY_VALIDATION,
+			}:
 				continue
 			observed_step.cached_automation_decision = CachedAutomationDecision(
 				decision=CachedAutomationDecisionStatus.WITHHOLD_SOURCE_RUN_NOT_SUCCESSFUL,
@@ -237,7 +238,7 @@ def compile_history_data(
 			)
 
 	summary = build_conversion_summary(observed_steps, issues)
-	cache_status = _determine_cache_status(run_completed, run_succeeded, summary)
+	cache_status = _determine_cache_status(run_completed, run_succeeded, summary, observed_steps)
 
 	return BrowserUseActionCache(
 		cache_status=cache_status,
@@ -288,15 +289,30 @@ def _classify_execution_result(
 
 	has_error = _non_empty_string(raw_result.get('error'))
 	reported_success = raw_result.get('success') if isinstance(raw_result.get('success'), bool) else None
+	judgement = raw_result.get('judgement')
+	judge_verdict: bool | None = None
+	judge_failure_reason: str | None = None
+	if isinstance(judgement, Mapping):
+		raw_verdict = judgement.get('verdict')
+		judge_verdict = raw_verdict if isinstance(raw_verdict, bool) else None
+		raw_failure_reason = judgement.get('failure_reason')
+		if isinstance(raw_failure_reason, str) and raw_failure_reason.strip():
+			judge_failure_reason = raw_failure_reason
 	if action_name == 'done' and raw_result.get('is_done') is True:
+		# Browser Use can report success from the acting agent while its final
+		# judge rejects the run. Keep only the judge's decision and concise failure
+		# reason in the cache, and never learn replay candidates from that run.
+		task_succeeded = reported_success is True and not has_error and judge_verdict is not False
 		return BrowserActionResult(
 			status=(
 				BrowserActionExecutionStatus.TASK_COMPLETED_SUCCESSFULLY
-				if reported_success is True and not has_error
+				if task_succeeded
 				else BrowserActionExecutionStatus.TASK_COMPLETED_UNSUCCESSFULLY
 			),
 			has_reported_error=has_error,
 			reported_success=reported_success,
+			judge_verdict=judge_verdict,
+			judge_failure_reason=judge_failure_reason,
 		)
 
 	if has_error or reported_success is False:
@@ -316,15 +332,23 @@ def _determine_cache_status(
 	run_completed: bool,
 	run_succeeded: bool | None,
 	summary: ConversionSummary,
+	observed_steps: list[ObservedStep],
 ) -> CacheStatus:
 	if not run_completed or run_succeeded is not True:
 		return CacheStatus.SOURCE_RUN_NOT_SUCCESSFUL
 	if summary.issues_found or summary.manual_review_steps:
 		return CacheStatus.NEEDS_MANUAL_REVIEW
+	if summary.deterministic_adapter_required_steps:
+		return CacheStatus.DRAFT_REQUIRES_DETERMINISTIC_ADAPTER
 	if summary.requires_agentic_handling or summary.unsupported_steps:
 		return CacheStatus.DRAFT_REQUIRES_AGENTIC_HANDLING
 	if summary.deterministic_candidates:
-		return CacheStatus.DRAFT_REQUIRES_LOCATOR_VALIDATION
+		if any(
+			step.cached_automation_decision.decision == CachedAutomationDecisionStatus.WAITING_FOR_LOCATOR_VALIDATION
+			for step in observed_steps
+		):
+			return CacheStatus.DRAFT_REQUIRES_LOCATOR_VALIDATION
+		return CacheStatus.DRAFT_REQUIRES_REPLAY_VALIDATION
 	return CacheStatus.NO_DETERMINISTIC_CANDIDATES
 
 

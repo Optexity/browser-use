@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import re
+import urllib.parse
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Literal, TypeVar
+from typing import Any, Literal, TypeVar, cast
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from browser_use.agent.history_cache.locators import build_locator_options, python_string_literal
 from browser_use.agent.history_cache.models import (
@@ -14,16 +15,39 @@ from browser_use.agent.history_cache.models import (
 	BrowserActionResult,
 	CachedAutomationDecision,
 	CachedAutomationDecisionStatus,
+	CachedDirectAction,
 	CachedPlaywrightAction,
+	CachedStepCandidate,
 	CompilationIssue,
 	DeterministicStepCandidate,
+	DirectActionCandidate,
+	DirectFindTextAction,
+	DirectGoBackAction,
+	DirectNavigateAction,
+	DirectScrollAction,
+	DirectSearchAction,
+	DirectSendKeysAction,
+	DirectSleepAction,
 	ElementUsed,
 	HistoryLocation,
 	PlaywrightAction,
 	PlaywrightClickAction,
+	PlaywrightScrollAction,
 	PlaywrightSelectAction,
+	PlaywrightUploadAction,
 )
-from browser_use.tools.views import ClickElementAction, InputTextAction, SelectDropdownOptionAction
+from browser_use.tools.views import (
+	ClickElementAction,
+	GetDropdownOptionsAction,
+	InputTextAction,
+	NavigateAction,
+	NoParamsAction,
+	ScrollAction,
+	SearchAction,
+	SelectDropdownOptionAction,
+	SendKeysAction,
+	UploadFileAction,
+)
 
 _SECRET_PLACEHOLDER_PATTERN = re.compile(r'<secret>[^<>]+</secret>')
 _SENSITIVE_ARGUMENT_NAME_PATTERN = re.compile(
@@ -34,11 +58,55 @@ _SENSITIVE_ARGUMENT_NAME_PATTERN = re.compile(
 _INPUT_ACTION_FIELDS = frozenset({'index', 'text', 'clear'})
 _CLICK_ACTION_FIELDS = frozenset({'index', 'coordinate_x', 'coordinate_y'})
 _SELECT_ACTION_FIELDS = frozenset({'index', 'text'})
+_NAVIGATE_ACTION_FIELDS = frozenset({'url', 'new_tab'})
+_GO_BACK_ACTION_FIELDS = frozenset({'description'})
+_WAIT_ACTION_FIELDS = frozenset({'seconds'})
+_SEARCH_ACTION_FIELDS = frozenset({'query', 'engine'})
+_SCROLL_ACTION_FIELDS = frozenset({'down', 'pages', 'index'})
+_SEND_KEYS_ACTION_FIELDS = frozenset({'keys'})
+_FIND_TEXT_ACTION_FIELDS = frozenset({'text'})
+_UPLOAD_ACTION_FIELDS = frozenset({'index', 'path'})
+_EVALUATE_ACTION_FIELDS = frozenset({'code'})
+_SCREENSHOT_ACTION_FIELDS = frozenset({'description'})
+_DROPDOWN_OPTIONS_FIELDS = frozenset({'index'})
 _COMPILED_ACTION_FIELDS = {
 	'input': _INPUT_ACTION_FIELDS,
 	'click': _CLICK_ACTION_FIELDS,
 	'select_dropdown': _SELECT_ACTION_FIELDS,
+	'navigate': _NAVIGATE_ACTION_FIELDS,
+	'go_back': _GO_BACK_ACTION_FIELDS,
+	'wait': _WAIT_ACTION_FIELDS,
+	'search': _SEARCH_ACTION_FIELDS,
+	'scroll': _SCROLL_ACTION_FIELDS,
+	'send_keys': _SEND_KEYS_ACTION_FIELDS,
+	'find_text': _FIND_TEXT_ACTION_FIELDS,
+	'upload_file': _UPLOAD_ACTION_FIELDS,
+	'evaluate': _EVALUATE_ACTION_FIELDS,
+	'screenshot': _SCREENSHOT_ACTION_FIELDS,
+	'dropdown_options': _DROPDOWN_OPTIONS_FIELDS,
 }
+
+_DETERMINISTIC_RUNTIME_GAP_ACTIONS = frozenset({'switch', 'close', 'write_file', 'replace_file', 'read_file'})
+
+
+class _WaitAction(BaseModel):
+	"""Source contract generated from Browser Use's ``wait(seconds: int)`` tool."""
+
+	model_config = ConfigDict(extra='forbid')
+
+	seconds: int = Field(default=3, ge=0, le=30)
+
+
+class _FindTextAction(BaseModel):
+	model_config = ConfigDict(extra='forbid')
+
+	text: str = Field(min_length=1, max_length=4096)
+
+
+class _EvaluateAction(BaseModel):
+	model_config = ConfigDict(extra='forbid')
+
+	code: str = Field(min_length=1, max_length=20000)
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,7 +121,7 @@ class _ActionCompilationContext:
 	candidate_number: int
 
 
-_CompilationOutcome = tuple[CachedAutomationDecision, DeterministicStepCandidate | None]
+_CompilationOutcome = tuple[CachedAutomationDecision, CachedStepCandidate | None]
 _ActionCompiler = Callable[[_ActionCompilationContext], _CompilationOutcome]
 _SourceActionModel = TypeVar('_SourceActionModel', bound=BaseModel)
 
@@ -125,6 +193,16 @@ def normalise_browser_action(action_name: str, action_arguments: Mapping[str, An
 			'url': action_arguments.get('url'),
 			'open_in_new_tab': action_arguments.get('new_tab', False),
 		}
+	elif action_name == 'search':
+		action_details = {
+			'query': action_arguments.get('query'),
+			'engine': action_arguments.get('engine', 'duckduckgo'),
+		}
+	elif action_name == 'scroll':
+		action_details = {
+			'down': action_arguments.get('down', True),
+			'pages': action_arguments.get('pages', 1.0),
+		}
 	elif action_name == 'done':
 		# The raw history remains the source of truth for the model's completion
 		# message. Avoid copying that potentially sensitive text into the cache.
@@ -161,7 +239,7 @@ def compile_action(
 	location: HistoryLocation,
 	issues: list[CompilationIssue],
 	candidate_number: int,
-) -> tuple[CachedAutomationDecision, DeterministicStepCandidate | None]:
+) -> tuple[CachedAutomationDecision, CachedStepCandidate | None]:
 	"""Dispatch one parsed action to its deterministic adapter or fallback decision."""
 	if action_name == 'done' and execution_result.status in {
 		BrowserActionExecutionStatus.TASK_COMPLETED_SUCCESSFULLY,
@@ -218,6 +296,19 @@ def compile_action(
 	)
 	action_compiler = _ACTION_COMPILERS.get(action_name)
 	if action_compiler is None:
+		if action_name in _DETERMINISTIC_RUNTIME_GAP_ACTIONS:
+			return (
+				CachedAutomationDecision(
+					decision=CachedAutomationDecisionStatus.DETERMINISTIC_ADAPTER_REQUIRED,
+					included_in_deterministic_candidates=False,
+					explanation=(
+						f'Browser Use action {action_name!r} is deterministic, but the current Optexity '
+						'runtime does not yet expose an equivalent typed action. It is retained for a '
+						'deterministic adapter and is never eligible for LLM conversion.'
+					),
+				),
+				None,
+			)
 		return (
 			CachedAutomationDecision(
 				decision=CachedAutomationDecisionStatus.UNSUPPORTED_ACTION,
@@ -229,7 +320,22 @@ def compile_action(
 			),
 			None,
 		)
-	return action_compiler(context)
+	try:
+		return action_compiler(context)
+	except ValidationError:
+		context.issues.append(
+			CompilationIssue(
+				issue_code='CANDIDATE_VALIDATION_FAILED',
+				explanation=(
+					'The recorded action is valid Browser Use history, but its replay candidate '
+					'exceeds the cache contract and requires manual review.'
+				),
+				history_location=context.location,
+			)
+		)
+		return _manual_review_outcome(
+			'The deterministic replay candidate could not be represented safely in the current cache schema.'
+		)
 
 
 def _compile_input_action(context: _ActionCompilationContext) -> _CompilationOutcome:
@@ -283,13 +389,15 @@ def _compile_click_action(context: _ActionCompilationContext) -> _CompilationOut
 				)
 			)
 			return _manual_review_outcome('The coordinate click is incomplete and cannot be replayed safely.')
-		return _agentic_outcome(
-			'A coordinate-only click has no stable target identity and requires an agentic or manually authored fallback.'
+		return _deterministic_adapter_required_outcome(
+			'A coordinate-only click is mechanically deterministic, but safe replay requires viewport/scale provenance '
+			'and a dedicated raw-coordinate runtime action.'
 		)
 
 	if context.element_used is not None and context.element_used.html_tag == 'select':
-		return _agentic_outcome(
-			'Browser Use treats clicking a native select as dropdown inspection, so it cannot be replayed as a mutating click.'
+		return _excluded_observation_outcome(
+			'Browser Use treats clicking a native select as dropdown inspection. The observation is retained but is not '
+			'replayed as a mutating click.'
 		)
 
 	return _build_element_action_candidate(context, PlaywrightClickAction())
@@ -332,6 +440,198 @@ def _compile_select_action(context: _ActionCompilationContext) -> _CompilationOu
 		)
 
 	return _build_element_action_candidate(context, PlaywrightSelectAction(option_text=params.text))
+
+
+def _compile_navigate_action(context: _ActionCompilationContext) -> _CompilationOutcome:
+	params = _validate_source_action(
+		context,
+		model=NavigateAction,
+		accepted_fields=_NAVIGATE_ACTION_FIELDS,
+		issue_code='INVALID_NAVIGATE_ACTION_ARGUMENTS',
+		explanation='A navigate action requires a non-empty URL and a boolean new_tab flag.',
+	)
+	if params is None or not params.url:
+		return _manual_review_outcome('The navigate arguments do not match the Browser Use navigation contract.')
+	return _build_direct_action_candidate(
+		context,
+		DirectNavigateAction(url=params.url, new_tab=params.new_tab),
+	)
+
+
+def _compile_go_back_action(context: _ActionCompilationContext) -> _CompilationOutcome:
+	params = _validate_source_action(
+		context,
+		model=NoParamsAction,
+		accepted_fields=_GO_BACK_ACTION_FIELDS,
+		issue_code='INVALID_GO_BACK_ACTION_ARGUMENTS',
+		explanation='A go-back action accepts no behavior-changing arguments.',
+	)
+	if params is None:
+		return _manual_review_outcome('The go-back arguments do not match the Browser Use action contract.')
+	return _build_direct_action_candidate(context, DirectGoBackAction())
+
+
+def _compile_wait_action(context: _ActionCompilationContext) -> _CompilationOutcome:
+	params = _validate_source_action(
+		context,
+		model=_WaitAction,
+		accepted_fields=_WAIT_ACTION_FIELDS,
+		issue_code='INVALID_WAIT_ACTION_ARGUMENTS',
+		explanation='A wait action requires an integer duration between 0 and 30 seconds.',
+	)
+	if params is None:
+		return _manual_review_outcome('The wait arguments do not match the Browser Use wait-action contract.')
+	return _build_direct_action_candidate(
+		context,
+		DirectSleepAction(
+			requested_seconds=params.seconds,
+			replay_seconds=min(max(params.seconds - 1, 0), 30),
+		),
+	)
+
+
+def _compile_search_action(context: _ActionCompilationContext) -> _CompilationOutcome:
+	params = _validate_source_action(
+		context,
+		model=SearchAction,
+		accepted_fields=_SEARCH_ACTION_FIELDS,
+		issue_code='INVALID_SEARCH_ACTION_ARGUMENTS',
+		explanation='A search action requires a non-empty query and one supported search engine.',
+	)
+	if params is None or not params.query:
+		return _manual_review_outcome('The search arguments do not match the Browser Use search-action contract.')
+	engine = params.engine.lower()
+	encoded_query = urllib.parse.quote_plus(params.query)
+	search_urls = {
+		'duckduckgo': f'https://duckduckgo.com/?q={encoded_query}',
+		'google': f'https://www.google.com/search?q={encoded_query}&udm=14',
+		'bing': f'https://www.bing.com/search?q={encoded_query}',
+	}
+	url = search_urls.get(engine)
+	if url is None:
+		return _manual_review_outcome('The recorded search engine is not supported by Browser Use replay.')
+	engine_name = cast(Literal['duckduckgo', 'google', 'bing'], engine)
+	return _build_direct_action_candidate(
+		context,
+		DirectSearchAction(query=params.query, engine=engine_name, url=url),
+	)
+
+
+def _compile_scroll_action(context: _ActionCompilationContext) -> _CompilationOutcome:
+	params = _validate_source_action(
+		context,
+		model=ScrollAction,
+		accepted_fields=_SCROLL_ACTION_FIELDS,
+		issue_code='INVALID_SCROLL_ACTION_ARGUMENTS',
+		explanation='A scroll action requires a positive number of viewport pages, optionally scoped to an element.',
+	)
+	if params is None or params.pages <= 0 or params.pages > 10:
+		return _manual_review_outcome('The scroll arguments do not match the bounded Browser Use scroll contract.')
+	if params.index in {None, 0}:
+		return _build_direct_action_candidate(
+			context,
+			DirectScrollAction(down=params.down, pages=params.pages),
+		)
+	return _build_element_action_candidate(
+		context,
+		PlaywrightScrollAction(down=params.down, pages=params.pages),
+	)
+
+
+def _compile_send_keys_action(context: _ActionCompilationContext) -> _CompilationOutcome:
+	params = _validate_source_action(
+		context,
+		model=SendKeysAction,
+		accepted_fields=_SEND_KEYS_ACTION_FIELDS,
+		issue_code='INVALID_SEND_KEYS_ACTION_ARGUMENTS',
+		explanation='A send-keys action requires one non-empty key or key chord string.',
+	)
+	if params is None or not params.keys.strip():
+		return _manual_review_outcome('The send-keys arguments do not match the Browser Use action contract.')
+	return _build_direct_action_candidate(context, DirectSendKeysAction(keys=params.keys))
+
+
+def _compile_find_text_action(context: _ActionCompilationContext) -> _CompilationOutcome:
+	params = _validate_source_action(
+		context,
+		model=_FindTextAction,
+		accepted_fields=_FIND_TEXT_ACTION_FIELDS,
+		issue_code='INVALID_FIND_TEXT_ACTION_ARGUMENTS',
+		explanation='A find-text action requires a non-empty text string.',
+	)
+	if params is None:
+		return _manual_review_outcome('The find-text arguments do not match the Browser Use action contract.')
+	return _build_direct_action_candidate(context, DirectFindTextAction(text=params.text))
+
+
+def _compile_upload_file_action(context: _ActionCompilationContext) -> _CompilationOutcome:
+	params = _validate_source_action(
+		context,
+		model=UploadFileAction,
+		accepted_fields=_UPLOAD_ACTION_FIELDS,
+		issue_code='INVALID_UPLOAD_FILE_ACTION_ARGUMENTS',
+		explanation='An upload-file action requires an element index and a non-empty file path.',
+	)
+	if params is None or params.index < 0 or not params.path:
+		return _manual_review_outcome('The upload-file arguments do not match the Browser Use action contract.')
+	if context.element_used is None:
+		return _deterministic_adapter_required_outcome(
+			'The upload action has no target evidence. A file input must be identified deterministically before replay.'
+		)
+	element_type = context.element_used.locator_relevant_attributes.get('type', '').lower()
+	if context.element_used.html_tag != 'input' or element_type != 'file':
+		return _deterministic_adapter_required_outcome(
+			'Upload replay requires recorded input[type="file"] evidence; a nearby or inferred file input is not promoted.'
+		)
+	return _build_element_action_candidate(context, PlaywrightUploadAction(file_path=params.path))
+
+
+def _compile_evaluate_action(context: _ActionCompilationContext) -> _CompilationOutcome:
+	params = _validate_source_action(
+		context,
+		model=_EvaluateAction,
+		accepted_fields=_EVALUATE_ACTION_FIELDS,
+		issue_code='INVALID_EVALUATE_ACTION_ARGUMENTS',
+		explanation='An evaluate action requires non-empty JavaScript within the configured replay size limit.',
+	)
+	if params is None:
+		return _manual_review_outcome('The evaluate arguments do not match the Browser Use action contract.')
+	return _deterministic_adapter_required_outcome(
+		'The exact JavaScript is retained as deterministic source evidence, but persistent arbitrary-code replay '
+		'requires an explicit trusted-history policy and a browser-only Optexity runtime action. It is never sent to '
+		'the conversion LLM.'
+	)
+
+
+def _compile_screenshot_action(context: _ActionCompilationContext) -> _CompilationOutcome:
+	params = _validate_source_action(
+		context,
+		model=NoParamsAction,
+		accepted_fields=_SCREENSHOT_ACTION_FIELDS,
+		issue_code='INVALID_SCREENSHOT_ACTION_ARGUMENTS',
+		explanation='A screenshot observation does not accept behavior-changing arguments.',
+	)
+	if params is None:
+		return _manual_review_outcome('The screenshot arguments do not match the Browser Use action contract.')
+	return _excluded_observation_outcome(
+		'The screenshot action only requested the next Browser Use observation and did not change the webpage.'
+	)
+
+
+def _compile_dropdown_options_action(context: _ActionCompilationContext) -> _CompilationOutcome:
+	params = _validate_source_action(
+		context,
+		model=GetDropdownOptionsAction,
+		accepted_fields=_DROPDOWN_OPTIONS_FIELDS,
+		issue_code='INVALID_DROPDOWN_OPTIONS_ARGUMENTS',
+		explanation='A dropdown-options observation requires an element index.',
+	)
+	if params is None or params.index < 0:
+		return _manual_review_outcome('The dropdown-options arguments do not match the Browser Use contract.')
+	return _excluded_observation_outcome(
+		'The dropdown-options action only inspected choices and did not change the webpage. The selected option, when '
+		'present, is represented by its own ordered select action.'
+	)
 
 
 def _validate_source_action(
@@ -419,6 +719,28 @@ def _build_element_action_candidate(
 	)
 
 
+def _build_direct_action_candidate(
+	context: _ActionCompilationContext,
+	direct_action: CachedDirectAction,
+) -> _CompilationOutcome:
+	return (
+		CachedAutomationDecision(
+			decision=CachedAutomationDecisionStatus.READY_FOR_REPLAY_VALIDATION,
+			included_in_deterministic_candidates=True,
+			deterministic_candidate_number=context.candidate_number,
+			explanation=(
+				f'The {context.action_name!r} action executed without a reported error and has a typed direct replay '
+				'candidate. A fresh replay must still validate its effect.'
+			),
+		),
+		DirectActionCandidate(
+			candidate_number=context.candidate_number,
+			source_step_number=context.step_number,
+			direct_action=direct_action,
+		),
+	)
+
+
 def _build_playwright_preview(locator: str, action: CachedPlaywrightAction) -> str | None:
 	if isinstance(action, PlaywrightAction):
 		return f'page.{locator}.{action.action_type}({python_string_literal(action.input_text)})'
@@ -428,6 +750,15 @@ def _build_playwright_preview(locator: str, action: CachedPlaywrightAction) -> s
 		if action.option_match == 'unresolved':
 			return None
 		return f'page.{locator}.select_option({action.option_match}={python_string_literal(action.option_text)})'
+	if isinstance(action, PlaywrightUploadAction):
+		return f'page.{locator}.set_input_files({python_string_literal(action.file_path)})'
+	if isinstance(action, PlaywrightScrollAction):
+		direction = 1 if action.down else -1
+		return (
+			f'page.{locator}.evaluate("(element, args) => '
+			f'element.scrollBy(0, args.direction * element.clientHeight * args.pages)", '
+			f'{{"direction": {direction}, "pages": {action.pages!r}}})'
+		)
 	raise TypeError(f'Unsupported Playwright action model: {type(action).__name__}')
 
 
@@ -453,10 +784,43 @@ def _agentic_outcome(explanation: str) -> _CompilationOutcome:
 	)
 
 
+def _deterministic_adapter_required_outcome(explanation: str) -> _CompilationOutcome:
+	return (
+		CachedAutomationDecision(
+			decision=CachedAutomationDecisionStatus.DETERMINISTIC_ADAPTER_REQUIRED,
+			included_in_deterministic_candidates=False,
+			explanation=explanation,
+		),
+		None,
+	)
+
+
+def _excluded_observation_outcome(explanation: str) -> _CompilationOutcome:
+	return (
+		CachedAutomationDecision(
+			decision=CachedAutomationDecisionStatus.EXCLUDE_OBSERVATION_ACTION,
+			included_in_deterministic_candidates=False,
+			explanation=explanation,
+		),
+		None,
+	)
+
+
 _ACTION_COMPILERS: dict[str, _ActionCompiler] = {
 	'input': _compile_input_action,
 	'click': _compile_click_action,
 	'select_dropdown': _compile_select_action,
+	'navigate': _compile_navigate_action,
+	'go_back': _compile_go_back_action,
+	'wait': _compile_wait_action,
+	'search': _compile_search_action,
+	'scroll': _compile_scroll_action,
+	'send_keys': _compile_send_keys_action,
+	'find_text': _compile_find_text_action,
+	'upload_file': _compile_upload_file_action,
+	'evaluate': _compile_evaluate_action,
+	'screenshot': _compile_screenshot_action,
+	'dropdown_options': _compile_dropdown_options_action,
 }
 
 
