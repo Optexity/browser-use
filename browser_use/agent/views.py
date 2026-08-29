@@ -47,6 +47,7 @@ class AgentSettings(BaseModel):
 	use_judge: bool = True
 	ground_truth: str | None = None  # Ground truth answer or criteria for judge validation
 	max_history_items: int | None = None
+	save_step_cache_path: str | None = None  # Path to write the agent step cache (memory layer) to; None disables
 
 	page_extraction_llm: BaseChatModel | None = None
 	calculate_cost: bool = False
