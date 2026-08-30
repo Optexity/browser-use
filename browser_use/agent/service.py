@@ -3,6 +3,7 @@ import gc
 import inspect
 import json
 import logging
+import os
 import re
 import tempfile
 import time
@@ -2347,6 +2348,18 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 				if Path(output_path).exists():
 					output_event = await CreateAgentOutputFileEvent.from_agent_and_file(self, output_path)
 					self.eventbus.dispatch(output_event)
+
+			# Save the agent step cache (memory layer for deterministic replay)
+			step_cache_path = self.settings.save_step_cache_path or os.environ.get('BROWSER_USE_STEP_CACHE_PATH')
+			if step_cache_path:
+				try:
+					from browser_use.agent.step_cache import build_step_cache
+
+					step_cache = build_step_cache(self.history, task=self.task)
+					step_cache.save_to_file(step_cache_path)
+					self.logger.info(f'💾 Step cache saved ({step_cache.summary()}) to {step_cache_path}')
+				except Exception as e:
+					self.logger.warning(f'Failed to save step cache: {e}')
 
 			# Log final messages to user based on outcome
 			self._log_final_outcome_messages()
