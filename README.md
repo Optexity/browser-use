@@ -294,3 +294,104 @@ For production use cases, use our [Browser Use Cloud API](https://cloud.browser-
 </div>
 
 <div align="center"> Made with ❤️ in Zurich and San Francisco </div>
+
+---
+
+## Step Cache — memory layer for deterministic replay
+
+This fork adds a **step cache**: after an agent run completes, every step the
+agent took is recorded, classified, and (if deterministic) turned into a
+Playwright command that can be replayed with **zero LLM inference**.
+
+> 📌 Built as the memory layer for the Optexity take-home assignment. The
+> optexity side converts this cache into deterministic automations, see
+> [`optexity` fork](https://github.com/ShubhamAvasthi/optexity/tree/feature/step-cache-memory-layer).
+
+### What it records
+
+Every action the agent executed, captured from the run history:
+
+- target URL and page title
+- action type + params (`click`, `input_text`, `select_option`, `go_to_url`, …)
+- element fingerprint: tag, attributes, xpath, accessible name, placeholder
+- typed text (with `press_enter` if a trailing Enter was folded in)
+- success / error, duration, and any `downloaded_files`
+- run-wide metrics: `total_duration_seconds`, `total_prompt_tokens`,
+  `total_completion_tokens`, `total_cost`
+
+### Classification
+
+| Class | Meaning | Examples |
+|---|---|---|
+| `deterministic` | concrete, repeatable state change | click, input, select |
+| `redundant` | exploratory / auxiliary, no deterministic state change | scroll, hover, waits |
+| `terminal` | the run's final `done` | — |
+
+Every step keeps a `reason`, so the classification is **auditable** — you can
+always see why a step was dropped.
+
+### Replay & locators
+
+`replay_steps()` collapses **consecutive** duplicate actions (exploration
+noise) while `deterministic_steps()` retains the full audit trail.
+
+Deterministic steps compile to Playwright commands via an 8-tier locator
+strategy (most stable first):
+
+1. `#id`
+2. `data-testid` / `data-test-id` / `data-cy`
+3. `a[href=…]` (semantic; survives dynamic counters in accessible names)
+4. `[name=…]` on form controls
+5. `aria-label` → `get_by_label`
+6. role + accessible name → `get_by_role` (with a `<summary>` → visible-text
+   special case, since Playwright's role engine doesn't expose `<summary>`)
+7. `placeholder` → `get_by_placeholder`
+8. recorded xpath as last resort
+
+### Download handling
+
+Recent browser-use actions can attach `downloaded_files` to a result. The
+cache handles two distinct cases when compiling a click to an Optexity
+automation:
+
+- **Real browser download** (click caused a download event): compiles to
+  `click_element` with `expect_download: true` + `download_filename`.
+- **Inline-plaintext link** (e.g. Gutenberg's `.txt` / `.md`, which the
+  browser renders inline rather than saving): compiles to a deterministic
+  `fetch()` + `ctx.save_download()` script. The fetch targets the **landing
+  URL** recorded by the cache, not the raw href, because redirecting hrefs
+  (Gutenberg's `https→http→https` chain) make in-page `fetch()` fail with
+  `TypeError: Failed to fetch`.
+
+### Usage
+
+```python
+from browser_use import Agent
+from browser_use.agent.views import AgentSettings
+
+agent = Agent(
+    task="...",
+    llm=llm,
+    settings=AgentSettings(save_step_cache_path="agent_step_cache.json"),
+)
+# ... run ...
+```
+
+Or via env var (used by the optexity integration):
+
+```bash
+export BROWSER_USE_STEP_CACHE_PATH=/path/to/agent_step_cache.json
+```
+
+### Tests
+
+`tests/ci/test_step_cache.py` — **27 unit tests** covering locator building,
+classification rules, consecutive-dedup, landing-URL download compilation,
+history extraction, and persistence.
+
+```bash
+pytest tests/ci/test_step_cache.py
+```
+
+See [`metrics.md`](../optexity/metrics.md) (optexity fork) for end-to-end
+agentic-vs-deterministic numbers.
