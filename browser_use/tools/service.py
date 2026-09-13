@@ -59,6 +59,7 @@ from browser_use.tools.views import (
 	UploadFileAction,
 )
 from browser_use.utils import create_task_with_error_handling, sanitize_surrogates, time_execution_sync
+from browser_use.action_cache.hook import log_action
 
 logger = logging.getLogger(__name__)
 
@@ -2178,6 +2179,13 @@ Validated Code (after quote fixing):
 
 		for action_name, params in action.model_dump(exclude_unset=True).items():
 			if params is not None:
+				cached_node = None
+				if isinstance(params, dict) and params.get('index') is not None:
+					try:
+						cached_node = await browser_session.get_element_by_index(params['index'])
+					except Exception:
+						pass				
+
 				# Use Laminar span if available, otherwise use no-op context manager
 				if Laminar is not None:
 					span_context = Laminar.start_as_current_span(
@@ -2221,13 +2229,18 @@ Validated Code (after quote fixing):
 						Laminar.set_span_output(result)
 
 				if isinstance(result, str):
-					return ActionResult(extracted_content=result)
-				elif isinstance(result, ActionResult):
-					return result
+					result = ActionResult(extracted_content=result)
 				elif result is None:
-					return ActionResult()
-				else:
+					result = ActionResult()
+				elif not isinstance(result, ActionResult):
 					raise ValueError(f'Invalid action result type: {type(result)} of {result}')
+
+				# --- action cache ---------------------------------------
+				await log_action(action_name, params, cached_node,
+				                 browser_session, result)
+				# --------------------------------------------------------
+
+				return result
 		return ActionResult()
 
 	def __getattr__(self, name: str):
